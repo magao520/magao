@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CollabBuilder - 多人协作建站</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ═══════ 入口页（创建/加入项目） ═══════ -->
+<div id="entryView" class="view active">
+  <div class="entry-bg"></div>
+  <div class="entry-card">
+    <div class="entry-logo">
+      <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+        <rect width="48" height="48" rx="12" fill="url(#g1)"/>
+        <path d="M14 24L22 16L30 24L22 32Z" fill="white" opacity="0.9"/>
+        <path d="M22 24L30 16L38 24L30 32Z" fill="white" opacity="0.6"/>
+        <defs><linearGradient id="g1" x1="0" y1="0" x2="48" y2="48"><stop stop-color="#6c5ce7"/><stop offset="1" stop-color="#00cec9"/></linearGradient></defs>
+      </svg>
+    </div>
+    <h1 class="entry-title">CollabBuilder</h1>
+    <p class="entry-subtitle">多人实时协作建站平台</p>
+
+    <div class="entry-form">
+      <div class="form-group">
+        <label>你的昵称</label>
+        <input id="entryName" type="text" placeholder="输入昵称" maxlength="20" value="">
+      </div>
+      <div class="form-group">
+        <label>项目名称</label>
+        <input id="entryProject" type="text" placeholder="输入项目名称" maxlength="30" value="">
+      </div>
+      <div class="entry-divider"><span>或</span></div>
+      <div class="form-group">
+        <label>加入已有项目（输入协作码）</label>
+        <div class="input-row">
+          <input id="entryCode" type="text" placeholder="输入协作码">
+          <button id="joinBtn" class="btn btn-primary">加入</button>
+        </div>
+      </div>
+      <button id="createBtn" class="btn btn-primary btn-lg btn-block">创建新项目</button>
+    </div>
+
+    <div class="entry-features">
+      <div class="feature"><span class="feature-icon">🎨</span> 可视化拖拽编辑</div>
+      <div class="feature"><span class="feature-icon">👥</span> 多人实时协作</div>
+      <div class="feature"><span class="feature-icon">📱</span> 响应式预览</div>
+      <div class="feature"><span class="feature-icon">💬</span> 内置团队聊天</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ 编辑器主界面 ═══════ -->
+<div id="editorView" class="view">
+  <!-- 顶部工具栏 -->
+  <header class="toolbar">
+    <div class="toolbar-left">
+      <button id="backBtn" class="toolbar-btn" title="返回">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <div class="toolbar-divider"></div>
+      <span id="projectName" class="project-name">未命名项目</span>
+      <span id="saveStatus" class="save-status">已同步</span>
+    </div>
+    <div class="toolbar-center">
+      <div id="pageTabs" class="page-tabs"></div>
+      <button id="addPageBtn" class="toolbar-btn-sm" title="添加页面">+</button>
+    </div>
+    <div class="toolbar-right">
+      <div id="onlineAvatars" class="online-avatars"></div>
+      <div class="toolbar-divider"></div>
+      <button id="undoBtn" class="toolbar-btn" title="撤销" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10h10a5 5 0 0 1 0 10H9"/><path d="M3 10l4-4M3 10l4 4"/></svg>
+      </button>
+      <button id="redoBtn" class="toolbar-btn" title="重做" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10H11a5 5 0 0 0 0 10h4"/><path d="M21 10l-4-4M21 10l-4 4"/></svg>
+      </button>
+      <div class="toolbar-divider"></div>
+      <button id="previewBtn" class="toolbar-btn" title="预览">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>预览</span>
+      </button>
+      <button id="exportBtn" class="toolbar-btn btn-export" title="导出HTML">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        <span>导出</span>
+      </button>
+      <button id="chatToggle" class="toolbar-btn" title="聊天">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- 编辑器主体 -->
+  <div class="editor-body">
+    <!-- 左侧：组件面板 -->
+    <aside id="leftPanel" class="panel panel-left">
+      <div class="panel-header">
+        <span>组件</span>
+      </div>
+      <div class="panel-body">
+        <div class="component-group">
+          <div class="group-title">基础</div>
+          <div class="component-grid">
+            <div class="comp-item" draggable="true" data-type="heading">
+              <div class="comp-icon">H</div>
+              <span>标题</span>
+            </div>
+            <div class="comp-item" draggable="true" data-type="text">
+              <div class="comp-icon">T</div>
+              <span>文本</span>
+            </div>
+            <div class="comp-item" draggable="true" data-type="image">
+              <div class="comp-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+              </div>
+              <span>图片</span>
+            </div>
+            <div class="comp-item" draggable="true" data-type="button">
+              <div class="comp-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="8" width="18" height="8" rx="2"/></svg>
+              </div>
+              <span>按钮</span>
+            </div>
+            <div class="comp-item" draggable="true" data-type="divider">
+              <div class="comp-icon">—</div>
+              <span>分割线</span>
+            </div>
+            <div class="comp-item" draggable="true" data-type="spacer">
+              <div class="comp-icon">␣</div>
+              <span>间距</span>
+            </div>
+          </div>
+        </div>
+        <div class="component-group">
+          <div class="group-title">布局</div>
+          <div class="component-grid">
+            <div class="comp-item" draggable="true" data-type="container">
+              <div class="comp-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 2"/></svg>
+              </div>
+              <span>容器</span>
+            </div>
+            <div class="comp-item" draggable="true" data-type="columns2">
+              <div class="comp-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="18" rx="1"/><rect x="13" y="3" width="8" height="18" rx="1"/></svg>
+              </div>
+              <span>两栏</span>
+            </div>
+            <div class="comp-item" draggable="true" data-type="columns3">
+              <div class="comp-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="6" height="18" rx="1"/><rect x="9" y="3" width="6" height="18" rx="1"/><rect x="16" y="3" width="6" height="18" rx="1"/></svg>
+              </div>
+              <span>三栏</span>
+            </div>
+          </div>
+        </div>
+        <div class="component-group">
+          <div class="group-title">高级</div>
+          <div class="component-grid">
+            <div class="comp-item" draggable="true" data-type="hero">
+              <div class="comp-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2"/><path d="M2 16h20"/></svg>
+              </div>
+              <span>Hero区</span>
+            </div>
+            <div class="comp-item" draggable="true" data-type="card">
+              <div class="comp-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>
+              </div>
+              <span>卡片</span>
+            </div>
+            <div class="comp-item" draggable="true" data-type="form">
+              <div class="comp-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h13"/></svg>
+              </div>
+              <span>表单</span>
+            </div>
+            <div class="comp-item" draggable="true" data-type="navbar">
+              <div class="comp-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="6" rx="1"/><path d="M6 7h2M10 7h2"/></svg>
+              </div>
+              <span>导航栏</span>
+            </div>
+            <div class="comp-item" draggable="true" data-type="footer">
+              <div class="comp-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="14" width="20" height="6" rx="1"/></svg>
+              </div>
+              <span>页脚</span>
+            </div>
+            <div class="comp-item" draggable="true" data-type="list">
+              <div class="comp-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+              </div>
+              <span>列表</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 中间：画布 -->
+    <main class="canvas-area">
+      <div class="canvas-wrapper" id="canvasWrapper">
+        <div id="canvas" class="canvas">
+          <div id="canvasContent" class="canvas-content">
+            <!-- 渲染的元素在这里 -->
+          </div>
+          <!-- 其他用户的光标 -->
+          <div id="remoteCursors" class="remote-cursors"></div>
+        </div>
+      </div>
+      <!-- 画布底部设备切换 -->
+      <div class="device-switcher">
+        <button class="device-btn active" data-device="desktop" title="桌面端">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        </button>
+        <button class="device-btn" data-device="tablet" title="平板">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M12 18h.01"/></svg>
+        </button>
+        <button class="device-btn" data-device="mobile" title="手机">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg>
+        </button>
+      </div>
+    </main>
+
+    <!-- 右侧：属性面板 -->
+    <aside id="rightPanel" class="panel panel-right">
+      <div class="panel-header">
+        <span>属性</span>
+      </div>
+      <div id="propsPanel" class="panel-body">
+        <div class="props-empty">选中画布上的元素以编辑属性</div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 聊天侧栏 -->
+  <div id="chatPanel" class="chat-panel hidden">
+    <div class="chat-panel-header">
+      <span>团队聊天</span>
+      <button id="chatClose" class="toolbar-btn-sm">✕</button>
+    </div>
+    <div id="chatMessages" class="chat-messages"></div>
+    <div class="chat-input-bar">
+      <input id="chatInput" type="text" placeholder="发送消息..." maxlength="500">
+      <button id="chatSend" class="btn btn-primary btn-sm">发送</button>
+    </div>
+  </div>
+
+  <!-- 预览弹窗 -->
+  <div id="previewModal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="preview-frame">
+      <div class="preview-header">
+        <span>预览模式</span>
+        <button id="previewClose" class="toolbar-btn-sm">✕</button>
+      </div>
+      <iframe id="previewIframe" class="preview-iframe"></iframe>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
