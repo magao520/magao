@@ -1,23 +1,27 @@
-// ═══════ CollabBuilder - 前端核心逻辑（Supabase Realtime 版） ═══════
+// ═══════ CollabBuilder - 前端核心逻辑（PeerJS P2P 版） ═══════
 
 // ─── 状态 ───
-let supabase = null;
-let channel = null;
+let peer = null;              // PeerJS 实例
+let connections = [];          // 所有 DataConnection（房主持有多条）
+let hostConn = null;          // 加入者到房主的连接
+let isHost = false;           // 是否是房主
 let myUserId = null;
 let myName = '';
 let myColor = '';
-let sessionId = null;
+let roomCode = null;          // 6位协作码
 let project = null;
 let currentPageId = null;
 let selectedElementId = null;
-let remoteCursors = {};   // userId -> { el, label }
-let otherSelected = {};   // userId -> elementId
+let remoteCursors = {};        // userId -> { el, label }
+let otherSelected = {};        // userId -> elementId
 let undoStack = [];
 let redoStack = [];
 let cursorThrottle = null;
-let presenceUsers = {};   // userId -> { id, name, color }
+let presenceUsers = {};       // userId -> { id, name, color }
+let colorIndexCounter = 0;
 
 const COLORS = ['#6c5ce7','#00cec9','#fd79a8','#fdcb6e','#e17055','#00b894','#0984e3','#d63031','#a29bfe','#55efc4'];
+const MAX_PEERS = 6;          // 最多 6 人协作
 
 // ─── DOM ───
 const $ = id => document.getElementById(id);
@@ -62,61 +66,465 @@ function currentPage() {
   return project?.pages.find(p => p.id === currentPageId) || null;
 }
 
-// ─── Supabase 配置管理 ───
-function loadSupabaseConfig() {
-  const url = localStorage.getItem('supabase_url') || '';
-  const key = localStorage.getItem('supabase_key') || '';
-  $('supabaseUrl').value = url;
-  $('supabaseKey').value = key;
-  if (url && key) {
-    initSupabase(url, key);
-  } else {
-    // 默认展开配置区域
-    $('supabaseConfig').classList.add('open');
-  }
-}
+// ─── PeerJS 连接管理 ───
 
-function saveSupabaseConfig() {
-  const url = $('supabaseUrl').value.trim();
-  const key = $('supabaseKey').value.trim();
-  if (!url || !key) {
-    alert('请填写 Supabase URL 和 Anon Key');
-    return;
-  }
-  localStorage.setItem('supabase_url', url);
-  localStorage.setItem('supabase_key', key);
-  initSupabase(url, key);
-}
-
-function initSupabase(url, key) {
-  try {
-    supabase = window.supabase.createClient(url, key);
-    $('supabaseStatus').textContent = '已连接';
-    $('supabaseStatus').classList.add('connected');
-    $('supabaseConfig').classList.remove('open');
-  } catch (err) {
-    console.error('Supabase 初始化失败:', err);
-    $('supabaseStatus').textContent = '连接失败';
-    $('supabaseStatus').classList.remove('connected');
-  }
-}
-
-// Supabase 配置 UI 交互
-$('supabaseConfigToggle').addEventListener('click', () => {
-  $('supabaseConfig').classList.toggle('open');
-});
-$('supabaseSaveBtn').addEventListener('click', saveSupabaseConfig);
-
-// ─── Supabase Realtime 连接 ───
+/**
+ * 发送消息
+ * - 房主：广播给所有连接的 peer（排除发送者）
+ * - 加入者：发送给房主（由房主广播）
+ */
 function send(data) {
-  if (!channel) return;
-  channel.send({
-    type: 'broadcast',
-    event: data.type,
-    payload: data,
+  if (isHost) {
+    // 房主广播给所有连接的 peer
+    const msg = JSON.stringify(data);
+    connections.forEach(conn => {
+      if (conn.open) {
+        try { conn.send(msg); } catch (e) { console.warn('发送失败:', e); }
+      }
+    });
+  } else if (hostConn && hostConn.open) {
+    // 加入者发送给房主
+    try { hostConn.send(JSON.stringify(data)); } catch (e) { console.warn('发送失败:', e); }
+  }
+}
+
+/**
+ * 创建房间（房主模式）
+ */
+function createRoom(userName, projectName) {
+  myUserId = uid();
+  myName = (userName || '匿名用户').slice(0, 20);
+  roomCode = genCode();
+  isHost = true;
+  colorIndexCounter = 0;
+  myColor = COLORS[colorIndexCounter++];
+
+  // 创建项目
+  project = createDefaultProject(projectName || '未命名项目');
+
+  // 创建 PeerJS Peer，ID 使用协作码作为前缀
+  const peerId = 'collab-' + roomCode;
+  peer = new Peer(peerId);
+
+  peer.on('open', (id) => {
+    console.log('[PeerJS] 房主已上线, peerId:', id);
+
+    // 显示协作码
+    entryCode.value = roomCode;
+    const box = document.querySelector('.collab-code-box');
+    if (box) box.remove();
+    const div = document.createElement('div');
+    div.className = 'collab-code-box';
+    div.innerHTML = `<div class="code-label">协作码（分享给其他人加入）</div><div class="code-value">${roomCode}</div>`;
+    entryView.querySelector('.entry-form').appendChild(div);
+
+    // 初始化 presence（自己）
+    presenceUsers = {};
+    presenceUsers[myUserId] = { id: myUserId, name: myName, color: myColor };
+
+    // 进入编辑器
+    onSessionJoined({
+      sessionId: roomCode,
+      userId: myUserId,
+      userName: myName,
+      userColor: myColor,
+      project,
+      users: [{ id: myUserId, name: myName, color: myColor }],
+    });
+  });
+
+  peer.on('connection', (conn) => {
+    handleIncomingConnection(conn);
+  });
+
+  peer.on('error', (err) => {
+    console.error('[PeerJS] 房主错误:', err);
+    if (err.type === 'unavailable-id') {
+      // 协作码冲突，重新生成
+      alert('协作码冲突，请重试');
+      cleanupPeer();
+    } else {
+      alert('连接错误: ' + err.message);
+    }
+  });
+
+  peer.on('disconnected', () => {
+    console.log('[PeerJS] 房主断开连接');
+    // 尝试重连
+    if (peer && !peer.destroyed) {
+      peer.reconnect();
+    }
   });
 }
 
+/**
+ * 加入房间（加入者模式）
+ */
+function joinRoom(code, userName) {
+  myUserId = uid();
+  myName = (userName || '匿名用户').slice(0, 20);
+  roomCode = code;
+  isHost = false;
+
+  // 创建随机 PeerJS Peer
+  peer = new Peer();
+
+  peer.on('open', (id) => {
+    console.log('[PeerJS] 加入者已上线, peerId:', id);
+
+    // 连接到房主
+    const hostPeerId = 'collab-' + roomCode;
+    hostConn = peer.connect(hostPeerId, { reliable: true });
+
+    hostConn.on('open', () => {
+      console.log('[PeerJS] 已连接到房主');
+
+      // 发送加入请求（包含用户信息）
+      hostConn.send(JSON.stringify({
+        type: 'joinRequest',
+        userId: myUserId,
+        userName: myName,
+      }));
+    });
+
+    hostConn.on('data', (rawData) => {
+      handleIncomingData(rawData);
+    });
+
+    hostConn.on('close', () => {
+      console.log('[PeerJS] 与房主的连接已关闭');
+      addChatSystem('与房主的连接已断开');
+    });
+
+    hostConn.on('error', (err) => {
+      console.error('[PeerJS] 连接房主错误:', err);
+      alert('无法连接到房主，请检查协作码是否正确');
+    });
+  });
+
+  peer.on('error', (err) => {
+    console.error('[PeerJS] 加入者错误:', err);
+    if (err.type === 'peer-unavailable') {
+      alert('找不到该协作码对应的房间，请检查协作码是否正确');
+    } else {
+      alert('连接错误: ' + err.message);
+    }
+  });
+}
+
+/**
+ * 房主处理新的 peer 连接
+ */
+function handleIncomingConnection(conn) {
+  console.log('[PeerJS] 新的 peer 连接请求');
+
+  // 检查人数限制
+  if (connections.length >= MAX_PEERS - 1) {
+    conn.on('open', () => {
+      conn.send(JSON.stringify({ type: 'roomFull' }));
+      conn.close();
+    });
+    return;
+  }
+
+  conn.on('open', () => {
+    console.log('[PeerJS] peer 连接已建立');
+    connections.push(conn);
+
+    // 暂存连接，等待 joinRequest 消息来获取用户信息
+    conn._pendingUser = true;
+  });
+
+  conn.on('data', (rawData) => {
+    handleIncomingData(rawData, conn);
+  });
+
+  conn.on('close', () => {
+    console.log('[PeerJS] peer 连接已关闭');
+    const idx = connections.indexOf(conn);
+    if (idx !== -1) {
+      connections.splice(idx, 1);
+      // 如果该连接有用户信息，通知其他人
+      if (conn._userId) {
+        onUserLeft({ userId: conn._userId });
+        addChatSystem(`${conn._userName || '某人'} 离开了协作`);
+        // 更新头像列表
+        updatePresenceUsers();
+        broadcastUserList();
+      }
+    }
+  });
+
+  conn.on('error', (err) => {
+    console.error('[PeerJS] 连接错误:', err);
+  });
+}
+
+/**
+ * 处理收到的数据消息
+ * @param {string} rawData - 原始数据（JSON 字符串或已解析的对象）
+ * @param {DataConnection} fromConn - 发送者的连接（仅房主有）
+ */
+function handleIncomingData(rawData, fromConn) {
+  let data;
+  if (typeof rawData === 'string') {
+    try { data = JSON.parse(rawData); } catch (e) { return; }
+  } else {
+    data = rawData;
+  }
+
+  switch (data.type) {
+
+    // ── 加入请求（房主收到） ──
+    case 'joinRequest': {
+      if (!isHost || !fromConn) return;
+
+      const color = COLORS[colorIndexCounter++ % COLORS.length];
+      fromConn._userId = data.userId;
+      fromConn._userName = data.userName;
+      fromConn._pendingUser = false;
+
+      // 记录用户
+      presenceUsers[data.userId] = { id: data.userId, name: data.userName, color };
+
+      // 发送当前项目状态给新用户
+      fromConn.send(JSON.stringify({
+        type: 'syncState',
+        project: project,
+        userId: data.userId,
+        userColor: color,
+      }));
+
+      // 通知新用户当前在线列表
+      fromConn.send(JSON.stringify({
+        type: 'userList',
+        users: getAllUsers(),
+      }));
+
+      // 广播给其他所有人：有新用户加入
+      broadcastToOthers(fromConn, {
+        type: 'userJoined',
+        user: { id: data.userId, name: data.userName, color },
+        users: getAllUsers(),
+      });
+
+      // 通知自己（房主）更新头像
+      updatePresenceUsers();
+      renderAvatars(getAllUsers());
+      addChatSystem(`${data.userName} 加入了协作`);
+      break;
+    }
+
+    // ── 房间已满 ──
+    case 'roomFull': {
+      alert('房间已满，最多支持 ' + MAX_PEERS + ' 人同时协作');
+      cleanupPeer();
+      break;
+    }
+
+    // ── 同步项目状态 ──
+    case 'syncState': {
+      // 场景1：加入者收到初始项目同步（来自房主的 joinRequest 响应）
+      if (!isHost && (data.userId === myUserId || !data.userId) && !data.targetUserId) {
+        if (data.userColor) myColor = data.userColor;
+        project = data.project;
+        currentPageId = project.pages[0]?.id;
+        onSessionJoined({
+          sessionId: roomCode,
+          userId: myUserId,
+          userName: myName,
+          userColor: myColor,
+          project,
+          users: [{ id: myUserId, name: myName, color: myColor }],
+        });
+        break;
+      }
+      // 场景2：撤销/重做时广播状态同步
+      if (data.targetUserId === '__all__' || data.targetUserId === myUserId) {
+        project = data.project;
+        currentPageId = project.pages[0]?.id;
+        renderCanvas();
+        renderPageTabs();
+      }
+      break;
+    }
+
+    // ── 用户列表更新 ──
+    case 'userList': {
+      if (isHost) return;
+      // 更新 presenceUsers
+      presenceUsers = {};
+      data.users.forEach(u => {
+        presenceUsers[u.id] = u;
+      });
+      // 确保自己在列表中
+      if (!presenceUsers[myUserId]) {
+        presenceUsers[myUserId] = { id: myUserId, name: myName, color: myColor };
+      }
+      renderAvatars(data.users);
+      break;
+    }
+
+    // ── 有新用户加入（其他 peer 收到） ──
+    case 'userJoined': {
+      if (data.user) {
+        presenceUsers[data.user.id] = data.user;
+      }
+      if (data.users) {
+        renderAvatars(data.users);
+      }
+      if (data.user && data.user.id !== myUserId) {
+        addChatSystem(`${data.user.name} 加入了协作`);
+      }
+      break;
+    }
+
+    // ── 光标移动 ──
+    case 'cursorMove': {
+      onCursorUpdate(data);
+      break;
+    }
+
+    // ── 元素操作 ──
+    case 'addElement': {
+      onElementAdded(data);
+      break;
+    }
+    case 'updateElement': {
+      onElementUpdated(data);
+      break;
+    }
+    case 'deleteElement': {
+      onElementDeleted(data);
+      break;
+    }
+    case 'moveElement': {
+      onElementMoved(data);
+      break;
+    }
+
+    // ── 页面操作 ──
+    case 'addPage': {
+      onPageAdded(data);
+      break;
+    }
+    case 'renamePage': {
+      onPageRenamed(data);
+      break;
+    }
+    case 'deletePage': {
+      onPageDeleted(data);
+      break;
+    }
+
+    // ── 选中元素 ──
+    case 'selectElement': {
+      onElementSelected(data);
+      break;
+    }
+
+    // ── 聊天 ──
+    case 'chat': {
+      onChat(data);
+      break;
+    }
+
+    // ── 用户离开 ──
+    case 'userLeft': {
+      if (data.userId !== myUserId) {
+        onUserLeft(data);
+        addChatSystem('某人离开了协作');
+      }
+      break;
+    }
+  }
+}
+
+/**
+ * 房主广播消息给除 fromConn 外的所有连接
+ */
+function broadcastToOthers(fromConn, data) {
+  const msg = JSON.stringify(data);
+  connections.forEach(conn => {
+    if (conn !== fromConn && conn.open) {
+      try { conn.send(msg); } catch (e) { console.warn('广播失败:', e); }
+    }
+  });
+}
+
+/**
+ * 获取所有在线用户列表
+ */
+function getAllUsers() {
+  const users = [];
+  // 房主自己
+  users.push({ id: myUserId, name: myName, color: myColor });
+  // 所有连接的 peer
+  connections.forEach(conn => {
+    if (conn._userId) {
+      users.push({
+        id: conn._userId,
+        name: conn._userName || '???',
+        color: presenceUsers[conn._userId]?.color || '#999',
+      });
+    }
+  });
+  return users;
+}
+
+/**
+ * 更新 presenceUsers（房主用）
+ */
+function updatePresenceUsers() {
+  presenceUsers = {};
+  presenceUsers[myUserId] = { id: myUserId, name: myName, color: myColor };
+  connections.forEach(conn => {
+    if (conn._userId && presenceUsers[conn._userId]) {
+      presenceUsers[conn._userId] = {
+        id: conn._userId,
+        name: conn._userName || '???',
+        color: presenceUsers[conn._userId].color,
+      };
+    }
+  });
+}
+
+/**
+ * 广播用户列表给所有人
+ */
+function broadcastUserList() {
+  const users = getAllUsers();
+  const msg = JSON.stringify({ type: 'userList', users });
+  connections.forEach(conn => {
+    if (conn.open) {
+      try { conn.send(msg); } catch (e) {}
+    }
+  });
+  // 更新自己的头像
+  renderAvatars(users);
+}
+
+/**
+ * 清理 PeerJS 连接
+ */
+function cleanupPeer() {
+  if (hostConn) {
+    try { hostConn.close(); } catch (e) {}
+    hostConn = null;
+  }
+  connections.forEach(conn => {
+    try { conn.close(); } catch (e) {}
+  });
+  connections = [];
+  if (peer && !peer.destroyed) {
+    peer.destroy();
+  }
+  peer = null;
+  isHost = false;
+  roomCode = null;
+}
+
+// ─── 项目创建 ───
 function createDefaultProject(name) {
   return {
     id: uid(),
@@ -130,196 +538,11 @@ function createDefaultProject(name) {
   };
 }
 
-function joinSession(sessionIdVal, userName, projectName) {
-  if (!supabase) {
-    alert('请先配置 Supabase 连接');
-    return;
-  }
-
-  myUserId = uid();
-  myName = (userName || '匿名用户').slice(0, 20);
-
-  // 离开旧频道
-  if (channel) {
-    channel.unsubscribe();
-    channel = null;
-  }
-
-  sessionId = sessionIdVal;
-
-  // 创建或使用已有项目
-  if (!project) {
-    project = createDefaultProject(projectName);
-  }
-
-  // 分配颜色
-  const colorIndex = Object.keys(presenceUsers).length % COLORS.length;
-  myColor = COLORS[colorIndex];
-
-  // 创建频道名称（使用 sessionId 作为频道标识）
-  const channelName = `collab-${sessionId}`;
-
-  channel = supabase.channel(channelName, {
-    config: {
-      broadcast: { self: false },
-      presence: { key: myUserId },
-    },
-  });
-
-  // ── Presence 事件 ──
-  channel.on('presence', { event: 'sync' }, () => {
-    const state = channel.presenceState();
-    const users = [];
-    presenceUsers = {};
-    for (const [key, presences] of Object.entries(state)) {
-      const p = presences[0];
-      presenceUsers[key] = p;
-      users.push({ id: p.userId, name: p.name, color: p.color });
-    }
-    // 添加自己
-    if (!users.find(u => u.id === myUserId)) {
-      users.push({ id: myUserId, name: myName, color: myColor });
-      presenceUsers[myUserId] = { userId: myUserId, name: myName, color: myColor };
-    }
-    renderAvatars(users);
-  });
-
-  channel.on('presence', { event: 'join' }, ({ newPresences }) => {
-    newPresences.forEach(p => {
-      if (p.userId !== myUserId) {
-        addChatSystem(`${p.name} 加入了协作`);
-      }
-    });
-  });
-
-  channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
-    leftPresences.forEach(p => {
-      if (p.userId !== myUserId) {
-        // 移除远程光标
-        if (remoteCursors[p.userId]) {
-          remoteCursors[p.userId].el.remove();
-          delete remoteCursors[p.userId];
-        }
-        if (otherSelected[p.userId]) {
-          const el = canvasContent.querySelector(`[data-id="${otherSelected[p.userId]}"]`);
-          if (el) el.classList.remove('other-selected');
-          delete otherSelected[p.userId];
-        }
-        addChatSystem(`${p.name} 离开了协作`);
-      }
-    });
-  });
-
-  // ── Broadcast 事件 ──
-  channel.on('broadcast', { event: 'cursorMove' }, ({ payload }) => {
-    onCursorUpdate(payload);
-  });
-
-  channel.on('broadcast', { event: 'addElement' }, ({ payload }) => {
-    onElementAdded(payload);
-  });
-
-  channel.on('broadcast', { event: 'updateElement' }, ({ payload }) => {
-    onElementUpdated(payload);
-  });
-
-  channel.on('broadcast', { event: 'deleteElement' }, ({ payload }) => {
-    onElementDeleted(payload);
-  });
-
-  channel.on('broadcast', { event: 'moveElement' }, ({ payload }) => {
-    onElementMoved(payload);
-  });
-
-  channel.on('broadcast', { event: 'addPage' }, ({ payload }) => {
-    onPageAdded(payload);
-  });
-
-  channel.on('broadcast', { event: 'renamePage' }, ({ payload }) => {
-    onPageRenamed(payload);
-  });
-
-  channel.on('broadcast', { event: 'deletePage' }, ({ payload }) => {
-    onPageDeleted(payload);
-  });
-
-  channel.on('broadcast', { event: 'selectElement' }, ({ payload }) => {
-    onElementSelected(payload);
-  });
-
-  channel.on('broadcast', { event: 'chat' }, ({ payload }) => {
-    onChat(payload);
-  });
-
-  channel.on('broadcast', { event: 'joinSession' }, ({ payload }) => {
-    // 当有人加入时，如果我是第一个用户，发送当前项目状态
-    // 新加入的用户需要请求项目数据
-    if (payload.userId !== myUserId && project) {
-      // 发送当前项目状态给新用户
-      send({
-        type: 'syncState',
-        project: project,
-        targetUserId: payload.userId,
-      });
-    }
-  });
-
-  channel.on('broadcast', { event: 'syncState' }, ({ payload }) => {
-    if (payload.targetUserId === myUserId) {
-      // 接收项目状态
-      project = payload.project;
-      currentPageId = project.pages[0]?.id;
-      renderCanvas();
-      renderPageTabs();
-    }
-  });
-
-  channel.on('broadcast', { event: 'leaveSession' }, ({ payload }) => {
-    onUserLeft(payload);
-  });
-
-  // ── 订阅频道 ──
-  channel.subscribe(async (status) => {
-    if (status === 'SUBSCRIBED') {
-      // 加入 Presence
-      await channel.track({
-        userId: myUserId,
-        name: myName,
-        color: myColor,
-      });
-
-      // 广播加入会话
-      send({ type: 'joinSession', userId: myUserId, userName: myName });
-
-      // 进入编辑器
-      onSessionJoined({
-        sessionId,
-        userId: myUserId,
-        userName: myName,
-        userColor: myColor,
-        project,
-        users: [{ id: myUserId, name: myName, color: myColor }],
-      });
-
-      // 显示协作码
-      if (!entryCode.value) {
-        entryCode.value = sessionId;
-        const box = document.querySelector('.collab-code-box');
-        if (box) box.remove();
-        const div = document.createElement('div');
-        div.className = 'collab-code-box';
-        div.innerHTML = `<div class="code-label">协作码（分享给其他人加入）</div><div class="code-value">${sessionId}</div>`;
-        entryView.querySelector('.entry-form').appendChild(div);
-      }
-    }
-  });
-}
-
 // ─── 消息处理（远程事件） ───
 
 // ─── 会话管理 ───
 function onSessionJoined(data) {
-  sessionId = data.sessionId;
+  roomCode = data.sessionId;
   myUserId = data.userId;
   myName = data.userName;
   myColor = data.userColor;
@@ -335,10 +558,6 @@ function onSessionJoined(data) {
   renderAvatars(data.users);
 }
 
-function onUserJoined(data) {
-  // Presence 会处理
-}
-
 function onUserLeft(data) {
   // 移除远程光标
   if (remoteCursors[data.userId]) {
@@ -350,6 +569,8 @@ function onUserLeft(data) {
     if (el) el.classList.remove('other-selected');
     delete otherSelected[data.userId];
   }
+  // 从 presenceUsers 中移除
+  delete presenceUsers[data.userId];
 }
 
 // ─── 远程光标 ───
@@ -940,7 +1161,7 @@ function addElement(type) {
 
 // ─── 画布光标追踪 ───
 canvasEl.addEventListener('mousemove', e => {
-  if (!sessionId) return;
+  if (!roomCode) return;
   const rect = canvasEl.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
@@ -1057,52 +1278,41 @@ function sendChat() {
 // ─── 返回 ───
 backBtn.addEventListener('click', () => {
   if (confirm('确定离开项目？未保存的更改将丢失。')) {
-    // 离开频道
-    if (channel) {
-      send({ type: 'leaveSession', userId: myUserId });
-      channel.untrack();
-      channel.unsubscribe();
-      channel = null;
-    }
-    sessionId = null;
+    // 通知其他人
+    send({ type: 'userLeft', userId: myUserId });
+
+    // 清理连接
+    cleanupPeer();
+
+    // 重置状态
+    roomCode = null;
     project = null;
     presenceUsers = {};
     remoteCursors = {};
     otherSelected = {};
+    undoStack = [];
+    redoStack = [];
+    selectedElementId = null;
+    currentPageId = null;
     showView(entryView);
   }
 });
 
 // ─── 入口按钮 ───
 createBtn.addEventListener('click', () => {
-  if (!supabase) {
-    alert('请先配置 Supabase 连接');
-    $('supabaseConfig').classList.add('open');
-    return;
-  }
   const name = entryName.value.trim() || '匿名用户';
   const proj = entryProject.value.trim() || '未命名项目';
-  const code = genCode();
-  entryCode.value = code;
-  myName = name;
-  // 创建新项目
-  project = createDefaultProject(proj);
-  joinSession(code, name, proj);
+  createRoom(name, proj);
 });
 
 joinBtn.addEventListener('click', () => {
-  if (!supabase) {
-    alert('请先配置 Supabase 连接');
-    $('supabaseConfig').classList.add('open');
-    return;
-  }
   const code = entryCode.value.trim();
   const name = entryName.value.trim() || '匿名用户';
-  if (!code) return;
-  myName = name;
-  // 加入已有项目（project 设为 null，等待 syncState）
-  project = null;
-  joinSession(code, name, null);
+  if (!code) {
+    alert('请输入协作码');
+    return;
+  }
+  joinRoom(code, name);
 });
 
 // ─── 键盘快捷键 ───
@@ -1122,6 +1332,3 @@ document.addEventListener('keydown', e => {
     if (selectedElementId) handleElementAction('dup', selectedElementId);
   }
 });
-
-// ─── 启动 ───
-loadSupabaseConfig();

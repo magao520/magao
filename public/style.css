@@ -562,46 +562,4 @@ input, button, select { font-family: inherit; }
   font-family: var(--font-mono); letter-spacing: 2px;
 }
 
-/* ═══════ Supabase 配置区域 ═══════ */
-.supabase-config {
-  margin-bottom: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-.supabase-config-header {
-  display: flex; align-items: center; gap: 8px;
-  padding: 10px 14px;
-  background: var(--bg-tertiary);
-  cursor: pointer;
-  transition: background var(--transition);
-  user-select: none;
-}
-.supabase-config-header:hover { background: var(--bg-hover); }
-.supabase-config-title {
-  flex: 1; font-size: 13px; font-weight: 600; color: var(--text-secondary);
-}
-.supabase-config-status {
-  font-size: 11px; padding: 2px 8px; border-radius: 10px;
-  background: rgba(255,107,107,0.15); color: var(--danger);
-}
-.supabase-config-status.connected {
-  background: rgba(0,184,148,0.15); color: var(--success);
-}
-.supabase-config-arrow {
-  color: var(--text-muted);
-  transition: transform 0.2s;
-}
-.supabase-config.open .supabase-config-arrow {
-  transform: rotate(180deg);
-}
-.supabase-config-body {
-  padding: 12px 14px;
-  border-top: 1px solid var(--border);
-  display: none;
-}
-.supabase-config.open .supabase-config-body {
-  display: block;
-}
-.supabase-config-body .form-group { margin-bottom: 10px; }
-.supabase-config-body .form-group:last-of-type { margin-bottom: 12px; }
+
