@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CollabBuilder - 多人协作建站</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -24,6 +25,25 @@
     <p class="entry-subtitle">多人实时协作建站平台</p>
 
     <div class="entry-form">
+      <!-- Supabase 配置区域 -->
+      <div id="supabaseConfig" class="supabase-config">
+        <div class="supabase-config-header" id="supabaseConfigToggle">
+          <span class="supabase-config-title">Supabase 配置</span>
+          <span class="supabase-config-status" id="supabaseStatus">未连接</span>
+          <svg class="supabase-config-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="supabase-config-body" id="supabaseConfigBody">
+          <div class="form-group">
+            <label>Supabase URL</label>
+            <input id="supabaseUrl" type="text" placeholder="https://your-project.supabase.co">
+          </div>
+          <div class="form-group">
+            <label>Supabase Anon Key</label>
+            <input id="supabaseKey" type="text" placeholder="eyJhbGciOiJIUzI1NiIs...">
+          </div>
+          <button id="supabaseSaveBtn" class="btn btn-primary btn-block btn-sm">保存配置</button>
+        </div>
+      </div>
       <div class="form-group">
         <label>你的昵称</label>
         <input id="entryName" type="text" placeholder="输入昵称" maxlength="20" value="">

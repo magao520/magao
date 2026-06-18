@@ -1,7 +1,8 @@
-// ═══════ CollabBuilder - 前端核心逻辑 ═══════
+// ═══════ CollabBuilder - 前端核心逻辑（Supabase Realtime 版） ═══════
 
 // ─── 状态 ───
-let ws = null;
+let supabase = null;
+let channel = null;
 let myUserId = null;
 let myName = '';
 let myColor = '';
@@ -14,6 +15,9 @@ let otherSelected = {};   // userId -> elementId
 let undoStack = [];
 let redoStack = [];
 let cursorThrottle = null;
+let presenceUsers = {};   // userId -> { id, name, color }
+
+const COLORS = ['#6c5ce7','#00cec9','#fd79a8','#fdcb6e','#e17055','#00b894','#0984e3','#d63031','#a29bfe','#55efc4'];
 
 // ─── DOM ───
 const $ = id => document.getElementById(id);
@@ -52,70 +56,266 @@ const redoBtn = $('redoBtn');
 function uid() { return Math.random().toString(36).slice(2, 10); }
 function esc(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
 function genCode() { return uid().toUpperCase().slice(0, 6); }
-function send(data) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data)); }
 function showView(view) { [entryView, editorView].forEach(v => v.classList.remove('active')); view.classList.add('active'); }
 
 function currentPage() {
   return project?.pages.find(p => p.id === currentPageId) || null;
 }
 
-// ─── WebSocket ───
-function connect() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}`);
-  ws.onclose = () => setTimeout(connect, 3000);
-  ws.onmessage = e => handleMsg(JSON.parse(e.data));
+// ─── Supabase 配置管理 ───
+function loadSupabaseConfig() {
+  const url = localStorage.getItem('supabase_url') || '';
+  const key = localStorage.getItem('supabase_key') || '';
+  $('supabaseUrl').value = url;
+  $('supabaseKey').value = key;
+  if (url && key) {
+    initSupabase(url, key);
+  } else {
+    // 默认展开配置区域
+    $('supabaseConfig').classList.add('open');
+  }
 }
 
-function handleMsg(data) {
-  switch (data.type) {
-    case 'sessionJoined':
-      onSessionJoined(data);
-      break;
-    case 'userJoined':
-      onUserJoined(data);
-      break;
-    case 'userLeft':
-      onUserLeft(data);
-      break;
-    case 'cursorUpdate':
-      onCursorUpdate(data);
-      break;
-    case 'elementAdded':
-      onElementAdded(data);
-      break;
-    case 'elementUpdated':
-      onElementUpdated(data);
-      break;
-    case 'elementDeleted':
-      onElementDeleted(data);
-      break;
-    case 'elementMoved':
-      onElementMoved(data);
-      break;
-    case 'elementSelected':
-      onElementSelected(data);
-      break;
-    case 'pageAdded':
-      onPageAdded(data);
-      break;
-    case 'pageRenamed':
-      onPageRenamed(data);
-      break;
-    case 'pageDeleted':
-      onPageDeleted(data);
-      break;
-    case 'chat':
-      onChat(data);
-      break;
-    case 'stateSync':
-      project = data.project;
+function saveSupabaseConfig() {
+  const url = $('supabaseUrl').value.trim();
+  const key = $('supabaseKey').value.trim();
+  if (!url || !key) {
+    alert('请填写 Supabase URL 和 Anon Key');
+    return;
+  }
+  localStorage.setItem('supabase_url', url);
+  localStorage.setItem('supabase_key', key);
+  initSupabase(url, key);
+}
+
+function initSupabase(url, key) {
+  try {
+    supabase = window.supabase.createClient(url, key);
+    $('supabaseStatus').textContent = '已连接';
+    $('supabaseStatus').classList.add('connected');
+    $('supabaseConfig').classList.remove('open');
+  } catch (err) {
+    console.error('Supabase 初始化失败:', err);
+    $('supabaseStatus').textContent = '连接失败';
+    $('supabaseStatus').classList.remove('connected');
+  }
+}
+
+// Supabase 配置 UI 交互
+$('supabaseConfigToggle').addEventListener('click', () => {
+  $('supabaseConfig').classList.toggle('open');
+});
+$('supabaseSaveBtn').addEventListener('click', saveSupabaseConfig);
+
+// ─── Supabase Realtime 连接 ───
+function send(data) {
+  if (!channel) return;
+  channel.send({
+    type: 'broadcast',
+    event: data.type,
+    payload: data,
+  });
+}
+
+function createDefaultProject(name) {
+  return {
+    id: uid(),
+    name: name || '未命名项目',
+    pages: [{
+      id: uid(),
+      name: '首页',
+      elements: [],
+    }],
+    createdAt: Date.now(),
+  };
+}
+
+function joinSession(sessionIdVal, userName, projectName) {
+  if (!supabase) {
+    alert('请先配置 Supabase 连接');
+    return;
+  }
+
+  myUserId = uid();
+  myName = (userName || '匿名用户').slice(0, 20);
+
+  // 离开旧频道
+  if (channel) {
+    channel.unsubscribe();
+    channel = null;
+  }
+
+  sessionId = sessionIdVal;
+
+  // 创建或使用已有项目
+  if (!project) {
+    project = createDefaultProject(projectName);
+  }
+
+  // 分配颜色
+  const colorIndex = Object.keys(presenceUsers).length % COLORS.length;
+  myColor = COLORS[colorIndex];
+
+  // 创建频道名称（使用 sessionId 作为频道标识）
+  const channelName = `collab-${sessionId}`;
+
+  channel = supabase.channel(channelName, {
+    config: {
+      broadcast: { self: false },
+      presence: { key: myUserId },
+    },
+  });
+
+  // ── Presence 事件 ──
+  channel.on('presence', { event: 'sync' }, () => {
+    const state = channel.presenceState();
+    const users = [];
+    presenceUsers = {};
+    for (const [key, presences] of Object.entries(state)) {
+      const p = presences[0];
+      presenceUsers[key] = p;
+      users.push({ id: p.userId, name: p.name, color: p.color });
+    }
+    // 添加自己
+    if (!users.find(u => u.id === myUserId)) {
+      users.push({ id: myUserId, name: myName, color: myColor });
+      presenceUsers[myUserId] = { userId: myUserId, name: myName, color: myColor };
+    }
+    renderAvatars(users);
+  });
+
+  channel.on('presence', { event: 'join' }, ({ newPresences }) => {
+    newPresences.forEach(p => {
+      if (p.userId !== myUserId) {
+        addChatSystem(`${p.name} 加入了协作`);
+      }
+    });
+  });
+
+  channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
+    leftPresences.forEach(p => {
+      if (p.userId !== myUserId) {
+        // 移除远程光标
+        if (remoteCursors[p.userId]) {
+          remoteCursors[p.userId].el.remove();
+          delete remoteCursors[p.userId];
+        }
+        if (otherSelected[p.userId]) {
+          const el = canvasContent.querySelector(`[data-id="${otherSelected[p.userId]}"]`);
+          if (el) el.classList.remove('other-selected');
+          delete otherSelected[p.userId];
+        }
+        addChatSystem(`${p.name} 离开了协作`);
+      }
+    });
+  });
+
+  // ── Broadcast 事件 ──
+  channel.on('broadcast', { event: 'cursorMove' }, ({ payload }) => {
+    onCursorUpdate(payload);
+  });
+
+  channel.on('broadcast', { event: 'addElement' }, ({ payload }) => {
+    onElementAdded(payload);
+  });
+
+  channel.on('broadcast', { event: 'updateElement' }, ({ payload }) => {
+    onElementUpdated(payload);
+  });
+
+  channel.on('broadcast', { event: 'deleteElement' }, ({ payload }) => {
+    onElementDeleted(payload);
+  });
+
+  channel.on('broadcast', { event: 'moveElement' }, ({ payload }) => {
+    onElementMoved(payload);
+  });
+
+  channel.on('broadcast', { event: 'addPage' }, ({ payload }) => {
+    onPageAdded(payload);
+  });
+
+  channel.on('broadcast', { event: 'renamePage' }, ({ payload }) => {
+    onPageRenamed(payload);
+  });
+
+  channel.on('broadcast', { event: 'deletePage' }, ({ payload }) => {
+    onPageDeleted(payload);
+  });
+
+  channel.on('broadcast', { event: 'selectElement' }, ({ payload }) => {
+    onElementSelected(payload);
+  });
+
+  channel.on('broadcast', { event: 'chat' }, ({ payload }) => {
+    onChat(payload);
+  });
+
+  channel.on('broadcast', { event: 'joinSession' }, ({ payload }) => {
+    // 当有人加入时，如果我是第一个用户，发送当前项目状态
+    // 新加入的用户需要请求项目数据
+    if (payload.userId !== myUserId && project) {
+      // 发送当前项目状态给新用户
+      send({
+        type: 'syncState',
+        project: project,
+        targetUserId: payload.userId,
+      });
+    }
+  });
+
+  channel.on('broadcast', { event: 'syncState' }, ({ payload }) => {
+    if (payload.targetUserId === myUserId) {
+      // 接收项目状态
+      project = payload.project;
       currentPageId = project.pages[0]?.id;
       renderCanvas();
       renderPageTabs();
-      break;
-  }
+    }
+  });
+
+  channel.on('broadcast', { event: 'leaveSession' }, ({ payload }) => {
+    onUserLeft(payload);
+  });
+
+  // ── 订阅频道 ──
+  channel.subscribe(async (status) => {
+    if (status === 'SUBSCRIBED') {
+      // 加入 Presence
+      await channel.track({
+        userId: myUserId,
+        name: myName,
+        color: myColor,
+      });
+
+      // 广播加入会话
+      send({ type: 'joinSession', userId: myUserId, userName: myName });
+
+      // 进入编辑器
+      onSessionJoined({
+        sessionId,
+        userId: myUserId,
+        userName: myName,
+        userColor: myColor,
+        project,
+        users: [{ id: myUserId, name: myName, color: myColor }],
+      });
+
+      // 显示协作码
+      if (!entryCode.value) {
+        entryCode.value = sessionId;
+        const box = document.querySelector('.collab-code-box');
+        if (box) box.remove();
+        const div = document.createElement('div');
+        div.className = 'collab-code-box';
+        div.innerHTML = `<div class="code-label">协作码（分享给其他人加入）</div><div class="code-value">${sessionId}</div>`;
+        entryView.querySelector('.entry-form').appendChild(div);
+      }
+    }
+  });
 }
+
+// ─── 消息处理（远程事件） ───
 
 // ─── 会话管理 ───
 function onSessionJoined(data) {
@@ -133,26 +333,13 @@ function onSessionJoined(data) {
   renderPageTabs();
   renderCanvas();
   renderAvatars(data.users);
-
-  // 显示协作码
-  if (!entryCode.value) {
-    entryCode.value = sessionId;
-    const box = document.querySelector('.collab-code-box');
-    if (box) box.remove();
-    const div = document.createElement('div');
-    div.className = 'collab-code-box';
-    div.innerHTML = `<div class="code-label">协作码（分享给其他人加入）</div><div class="code-value">${sessionId}</div>`;
-    entryView.querySelector('.entry-form').appendChild(div);
-  }
 }
 
 function onUserJoined(data) {
-  renderAvatars(data.users);
-  addChatSystem(`${data.user.name} 加入了协作`);
+  // Presence 会处理
 }
 
 function onUserLeft(data) {
-  renderAvatars(data.users);
   // 移除远程光标
   if (remoteCursors[data.userId]) {
     remoteCursors[data.userId].el.remove();
@@ -183,8 +370,7 @@ function onCursorUpdate(data) {
   cursor.el.style.left = data.x + 'px';
   cursor.el.style.top = data.y + 'px';
   // 找到用户名
-  const users = project?._users || [];
-  const user = users.find(u => u.id === data.userId);
+  const user = presenceUsers[data.userId];
   cursor.label.textContent = user?.name || '???';
 }
 
@@ -315,7 +501,19 @@ function renderPageTabs() {
     btn.addEventListener('click', e => {
       e.stopPropagation();
       const pid = btn.dataset.pageId;
-      if (project.pages.length > 1) send({ type: 'deletePage', pageId: pid });
+      if (project.pages.length > 1) {
+        // 本地执行删除
+        const page = project.pages.find(p => p.id === pid);
+        if (page) {
+          project.pages = project.pages.filter(p => p.id !== pid);
+          if (currentPageId === pid) {
+            currentPageId = project.pages[0]?.id;
+            renderCanvas();
+          }
+          renderPageTabs();
+        }
+        send({ type: 'deletePage', pageId: pid });
+      }
     });
   });
 }
@@ -473,7 +671,7 @@ function selectElement(id) {
     el.classList.toggle('selected', el.dataset.id === id);
   });
   renderProps();
-  send({ type: 'selectElement', elementId: id });
+  send({ type: 'selectElement', elementId: id, userId: myUserId });
   // 绑定操作按钮
   canvasContent.querySelectorAll('.element-action-btn').forEach(btn => {
     btn.onclick = e => {
@@ -550,7 +748,7 @@ undoBtn.addEventListener('click', () => {
   page.elements = undoStack.pop();
   renderCanvas();
   updateUndoRedoBtns();
-  send({ type: 'syncState', project });
+  send({ type: 'syncState', project, targetUserId: '__all__' });
 });
 
 redoBtn.addEventListener('click', () => {
@@ -561,7 +759,7 @@ redoBtn.addEventListener('click', () => {
   page.elements = redoStack.pop();
   renderCanvas();
   updateUndoRedoBtns();
-  send({ type: 'syncState', project });
+  send({ type: 'syncState', project, targetUserId: '__all__' });
 });
 
 function updateUndoRedoBtns() {
@@ -748,7 +946,7 @@ canvasEl.addEventListener('mousemove', e => {
   const y = e.clientY - rect.top;
   if (cursorThrottle) return;
   cursorThrottle = setTimeout(() => { cursorThrottle = null; }, 50);
-  send({ type: 'cursorMove', x, y });
+  send({ type: 'cursorMove', userId: myUserId, x, y, color: myColor });
 });
 
 // ─── 设备切换 ───
@@ -766,7 +964,10 @@ document.querySelectorAll('.device-btn').forEach(btn => {
 addPageBtn.addEventListener('click', () => {
   const name = prompt('新页面名称:', `页面${project.pages.length + 1}`);
   if (!name) return;
-  send({ type: 'addPage', name });
+  const newPage = { id: uid(), name, elements: [] };
+  project.pages.push(newPage);
+  send({ type: 'addPage', page: newPage });
+  renderPageTabs();
 });
 
 // ─── 预览 ───
@@ -844,36 +1045,64 @@ chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); 
 function sendChat() {
   const text = chatInput.value.trim();
   if (!text) return;
-  send({ type: 'chat', text });
+  send({
+    type: 'chat',
+    user: { id: myUserId, name: myName, color: myColor },
+    text: String(text).slice(0, 500),
+    time: Date.now(),
+  });
   chatInput.value = '';
 }
 
 // ─── 返回 ───
 backBtn.addEventListener('click', () => {
   if (confirm('确定离开项目？未保存的更改将丢失。')) {
-    send({ type: 'leaveSession' });
+    // 离开频道
+    if (channel) {
+      send({ type: 'leaveSession', userId: myUserId });
+      channel.untrack();
+      channel.unsubscribe();
+      channel = null;
+    }
     sessionId = null;
     project = null;
+    presenceUsers = {};
+    remoteCursors = {};
+    otherSelected = {};
     showView(entryView);
   }
 });
 
 // ─── 入口按钮 ───
 createBtn.addEventListener('click', () => {
+  if (!supabase) {
+    alert('请先配置 Supabase 连接');
+    $('supabaseConfig').classList.add('open');
+    return;
+  }
   const name = entryName.value.trim() || '匿名用户';
   const proj = entryProject.value.trim() || '未命名项目';
   const code = genCode();
   entryCode.value = code;
   myName = name;
-  send({ type: 'joinSession', sessionId: code, userName: name, projectName: proj });
+  // 创建新项目
+  project = createDefaultProject(proj);
+  joinSession(code, name, proj);
 });
 
 joinBtn.addEventListener('click', () => {
+  if (!supabase) {
+    alert('请先配置 Supabase 连接');
+    $('supabaseConfig').classList.add('open');
+    return;
+  }
   const code = entryCode.value.trim();
   const name = entryName.value.trim() || '匿名用户';
   if (!code) return;
   myName = name;
-  send({ type: 'joinSession', sessionId: code, userName: name });
+  // 加入已有项目（project 设为 null，等待 syncState）
+  project = null;
+  joinSession(code, name, null);
 });
 
 // ─── 键盘快捷键 ───
@@ -895,4 +1124,4 @@ document.addEventListener('keydown', e => {
 });
 
 // ─── 启动 ───
-connect();
+loadSupabaseConfig();
